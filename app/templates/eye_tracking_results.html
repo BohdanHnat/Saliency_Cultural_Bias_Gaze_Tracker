@@ -14,7 +14,7 @@
 
             <ul class="et-image-list">
                 {% for img in processed_images %}
-                <li>
+                <li class="{% if img == selected_image %}selected{% endif %}">
                     <form method="get" action="{{ url_for('eye_tracking_results') }}">
                         <input type="hidden" name="image" value="{{ img }}">
                         <button type="submit" class="et-image-btn" {% if img == selected_image %} disabled {% endif %}>
@@ -27,23 +27,13 @@
             </ul>
 
             <div class="et-sidebar-footer">
-                <a href="{{ url_for('calibration') }}" class="et-nav-button">Restart Calibration</a>
-                <a href="{{ url_for('eye_tracking') }}" class="et-nav-button">Back to Eye Tracking</a>
+                <a href="{{ url_for('calibration_page') }}" class="et-nav-button">Calibration Page</a>
+                <a href="{{ url_for('eye_tracking_page') }}" class="et-nav-button">Eye Tracking Page</a>
             </div>
         </aside>
 
-        <div class="et-content">
-            <div class="et-image-true-bg">
-                <div style="position:relative; width:100%; height:100%;">
-                    <img src="{{ url_for('static', filename=selected_image) }}"
-                         class="et-main-image-true"
-                         style="position:absolute; top:0; left:0; z-index:1;">
-
-                    <img src="{{ url_for('gaze_heatmap_cached', image=selected_image) }}"
-                         class="et-main-image-true"
-                         style="position:absolute; top:0; left:0; z-index:2; pointer-events:none;">
-                </div>
-            </div>
+        <div class="et-content-frame">
+            <img src="{{ url_for('gaze_heatmap_cached', image=selected_image) }}" class="et-content-image">
         </div>
     </div>
 </body>

@@ -1,7 +1,7 @@
 from flask import render_template, redirect, url_for, session, send_file, current_app, request, jsonify
 
 from app.utils import get_session_id, get_image_files, gaze_store, frame_counters, frame_data_lock
-from app.scripts.settings import face_mesh, TARGET_POSITIONS, ET_RECORD_FRAMES, CAM_FPS
+from app.scripts.settings import face_mesh, CALIB_FRAMES, ET_RECORD_SECONDS
 from app.scripts.eye_tracker import run_eye_tracking
 from app.scripts.calibration import calibrate_frame
 from app.scripts.visuals import generate_heatmap
@@ -9,15 +9,17 @@ from app import app
 
 import numpy as np
 import threading
-import base64
 import cv2
 import io
 import os
 
 @app.route('/')
 def homepage():
-    session['calib_started'] = False
     return render_template('homepage.html')
+
+@app.before_request
+def force_fresh_session():
+    session.permanent = False
 
 @app.route('/reset_session', methods=['POST'])
 def reset_session():
@@ -28,20 +30,21 @@ def reset_session():
     if sid in gaze_store:
         del gaze_store[sid]
 
-    return redirect(url_for('homepage'))
+    if request.is_json:
+        return jsonify({"status": "reset"})
+    else:
+        # Redirect (manual button press)
+        return redirect(url_for('homepage'))
 
 @app.route('/calibration', methods=['GET', 'POST'])
-def calibration():
+def calibration_page():
     if 'calib_started' not in session:
         session['calib_started'] = False
 
-    num_targets = len(TARGET_POSITIONS)
-    calib_completed = session.get('target_index', 0) >= num_targets
-
-    return render_template('calibration.html', calib_completed=calib_completed)
+    return render_template('calibration.html')
 
 @app.route('/calibration_frame', methods=['POST'])
-def calibration_frame(): # Recieves a webcam frame
+def calibration_frame():  # Receives a webcam frame
     file = request.files['frame']
     file_bytes = np.frombuffer(file.read(), np.uint8)
     frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
@@ -52,15 +55,15 @@ def calibration_frame(): # Recieves a webcam frame
     target_index = session.get('target_index', 0)
     current_target_frame = session.get('current_target_frame', 0)
 
-    frame_bytes, current_target_frame = calibrate_frame(
+    status, current_target_frame = calibrate_frame(
         frame, face_mesh, calib_started, target_index, current_target_frame, session_id, gaze_store
     )
 
     session['current_target_frame'] = current_target_frame
 
-    frame_base64 = base64.b64encode(frame_bytes).decode('utf-8')
+    if not status.get("calib_completed", False) and current_target_frame >= CALIB_FRAMES: next_target()
 
-    return jsonify({'frame': frame_base64})
+    return jsonify(status)
 
 @app.route('/start_calibration', methods=['POST'])
 def start_calibration():
@@ -75,31 +78,32 @@ def start_calibration():
     if sid in gaze_store:
         del gaze_store[sid]
 
-    return redirect(url_for('calibration'))
+    # Return status dict
+    status = {
+        "calib_started": True,
+        "calib_completed": False,
+        "target_index": 0,
+    }
+    return jsonify(status)
 
-@app.route('/next_target', methods=['POST'])
+@app.route('/next_target', methods=['GET', 'POST'])
 def next_target():
-    # Allow advancing targets only if calibration has started
-    if not session.get('calib_started', False):
-        return redirect(url_for('calibration'))
-
-    # Move to next calibration target and reset frame counter
     idx = session.get('target_index', 0)
     session['target_index'] = idx + 1
     session['current_target_frame'] = 0
 
-    return redirect(url_for('calibration'))
+    # Internal auto-advance (from calibration_frame), no return content
+    return ("", 204)
 
 @app.route('/eye_tracking', methods=['GET'])
-def eye_tracking():
+def eye_tracking_page():
     sid = get_session_id()
     image_files = get_image_files()
-    session['calib_started'] = False
 
-    selected_image = request.args.get('image', image_files[0] if image_files else 'img_1.jpg')
+    selected_image = request.args.get('image', image_files[0] if image_files else 'Image_1')
 
     tracking_in_progress = gaze_store.get(sid, {}).get('tracking_in_progress', False)
-    tracking_seconds = ET_RECORD_FRAMES // CAM_FPS
+    tracking_seconds = ET_RECORD_SECONDS
 
     return render_template(
         'eye_tracking.html',
@@ -143,7 +147,7 @@ def start_eye_tracking():
 
     gaze_store.setdefault(sid, {})['tracking_in_progress'] = True
 
-    return redirect(url_for('eye_tracking', image=image))
+    return redirect(url_for('eye_tracking_page', image=image))
 
 @app.route('/eye_tracking_status')
 def eye_tracking_status():
@@ -177,9 +181,9 @@ def eye_tracking_results():
     if selected_image not in heatmap_cache:
         gaze_data = gaze_results_dict.get(selected_image, [])
 
-        bg_image_file = os.path.join(current_app.static_folder, selected_image)
+        image_file = os.path.join(current_app.static_folder, "images", f"{selected_image}.jpg")
 
-        img = generate_heatmap(gaze_data, bg_image_file)
+        img = generate_heatmap(gaze_data, image_file)
 
         img_io = io.BytesIO()
         img.save(img_io, 'PNG')
@@ -197,7 +201,7 @@ def gaze_heatmap_cached():
     sid = get_session_id()
     image = request.args.get('image')
 
-    # Serve the already-generated PNG from cache
+    # Serve the already-generated heatmap PNG from cache
     cached = gaze_store.get(sid, {}).get('heatmap_cache', {}).get(image)
     if not cached:
         return ('Heatmap not generated', 404)

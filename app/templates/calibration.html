@@ -7,68 +7,179 @@
 <body>
   <div class="main-container">
 
-    <div class="calib-header">
-      Calibration in progress – focus your gaze on the green dot
-    </div>
+    <div class="calib-zone-container" id="calib-zone">
+      <div id="calib-placeholder" class="calib-placeholder hidden"><p>Press "<strong>(Re)Start</strong>" to either begin calibration or restart whenever calibration is complete</p></div>
+      <div id="prestart-hint" class="calib-placeholder idle text-box-container hidden"><p>Press "<strong>Next</strong>" to skip to the next calibration target without waiting for all frames</p></div>
 
-    <div class="calib-video-container">
+      <div id="post-complete-hints" class="post-calib-text-row hidden">
+        <div id="home-hint" class="calib-placeholder idle text-box-container hidden"><p>Press "<strong>Home</strong>" to return to the main page</p></div>
+        <div id="eye-hint" class="calib-placeholder idle text-box-container hidden"><p>Press "<strong>Eye Tracking Page</strong>" to proceed to the eye tracking page</p></div>
+      </div>
+
+      <div id="target-layer" class="target-layer"></div>
+
       <video id="webcam" autoplay playsinline style="display:none;"></video>
       <canvas id="frame-canvas" width="1280" height="720" style="display:none;"></canvas>
-      <img id="calib-processed" class="calib-video-large" alt="Calibration Feedback">
     </div>
 
     <div class="calib-footer">
-      <form method="POST" action="{{ url_for('start_calibration') }}" style="display:inline;">
-        <button type="submit">Start</button>
+      <form id="start-form" style="display:inline;">
+        <button type="submit">(Re)Start</button>
       </form>
+
       <form method="POST" action="{{ url_for('next_target') }}" style="display:inline;">
         <button type="submit">Next</button>
       </form>
 
-      {% if calib_completed %}
-        <a href="{{ url_for('homepage') }}" class="results-button">Home</a>
-        <a href="{{ url_for('eye_tracking') }}" class="results-button">Begin Eye Tracking</a>
-      {% endif %}
+      <a href="{{ url_for('homepage') }}" class="results-button" id="home-btn" style="display:none;">Home</a>
+      <a href="{{ url_for('eye_tracking_page') }}" class="results-button" id="eye-btn" style="display:none;">Eye Tracking Page</a>
     </div>
+
+    <script src="{{ url_for('static', filename='js_scripts/calib_targets.js') }}"></script>
     <script>
-      // Webcam capture
       const video = document.getElementById('webcam');
       const canvas = document.getElementById('frame-canvas');
       const context = canvas.getContext('2d');
-      const img = document.getElementById('calib-processed');
-      let captureActive = true;
 
-      // Request webcam access
-      navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } })
-        .then((stream) => { video.srcObject = stream; })
-        .catch((err) => { alert('Camera access denied or unavailable'); });
+      const containerEl = document.getElementById('calib-zone');
+      const placeholderEl = document.getElementById('calib-placeholder');
+      const prestartHintEl = document.getElementById('prestart-hint');
+      
+      const postCompleteHintsEl = document.getElementById('post-complete-hints');
+      const homeHintEl = document.getElementById('home-hint');
+      const eyeHintEl = document.getElementById('eye-hint');
 
-      // Send frames to backend at regular intervals
+      const homeBtn = document.getElementById("home-btn");
+      const eyeBtn = document.getElementById("eye-btn");
+
+      const startForm = document.getElementById("start-form");
+
+      let timerId = null;
+      let busy = false;
+
+      // Webcam + sending
+      function startSending() {
+        if (timerId) return;
+        timerId = setInterval(sendFrame, 250);
+      }
+
+      function stopSending() {
+        if (timerId) {
+          clearInterval(timerId);
+          timerId = null;
+        }
+      }
+
+      function initWebcamAndSend() {
+        navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } })
+          .then((stream) => {
+            video.srcObject = stream;
+            startSending();
+          })
+          .catch((err) => { alert("Camera access denied or unavailable"); });
+      }
+
+      // Frame sending
       function sendFrame() {
-        if (!captureActive) return;
+        if (busy) return;
+        if (!video.srcObject || video.readyState < 2) return;
+
+        busy = true;
+
         context.drawImage(video, 0, 0, canvas.width, canvas.height);
         canvas.toBlob(function(blob) {
+          if (!blob) { busy = false; return; }
+
           const formData = new FormData();
           formData.append('frame', blob, 'frame.jpg');
+
           fetch('{{ url_for("calibration_frame") }}', {
             method: 'POST',
             body: formData
           })
           .then(response => response.json())
           .then(data => {
-            // Display processed frame dynamically
-            if (data.frame) {
-              img.src = 'data:image/jpeg;base64,' + data.frame;
+            if (placeholderEl) {
+              // Clear all status classes
+              placeholderEl.classList.remove("idle", "active", "calib-complete");
+
+              if (!data.calib_started) {
+                placeholderEl.classList.remove("hidden");
+                placeholderEl.classList.add("idle");
+                placeholderEl.classList.add("text-box-container");
+
+                if (prestartHintEl) prestartHintEl.classList.remove("hidden");
+
+              } else if (!data.calib_completed && data.target_index != null) {
+                placeholderEl.textContent = data.message;
+                placeholderEl.classList.remove("hidden");
+                placeholderEl.classList.add("active");
+                placeholderEl.classList.remove("text-box-container");
+
+                if (prestartHintEl) prestartHintEl.classList.add("hidden");
+
+              } else if (data.calib_completed) {
+                placeholderEl.textContent = "Calibration complete!";
+                placeholderEl.classList.remove("hidden");
+                placeholderEl.classList.add("calib-complete");
+                placeholderEl.classList.remove("text-box-container");
+                
+                if (containerEl) containerEl.classList.add("completed");
+
+                if (prestartHintEl) prestartHintEl.classList.add("hidden");
+                
+                if (postCompleteHintsEl) postCompleteHintsEl.classList.remove("hidden");
+                if (homeHintEl) homeHintEl.classList.remove("hidden");
+                if (eyeHintEl) eyeHintEl.classList.remove("hidden");
+
+                homeBtn.style.display = "inline-block";
+                eyeBtn.style.display = "inline-block";
+
+                stopSending();
+                const tracks = video.srcObject?.getTracks?.() || [];
+                tracks.forEach(t => t.stop());
+              }
             }
-            if (data.calib_completed) {
-              captureActive = false;
-              img.classList.add('calib-complete'); // Optional: style if complete
-              alert('Calibration complete!');
-            }
-          });
+            // Target overlay update
+            showTarget(data);
+          })
+          .catch(err => console.error(err))
+          .finally(() => { busy = false; });
         }, 'image/jpeg');
       }
-      setInterval(sendFrame, 120);
+
+      // Start button logic
+      if (startForm) {
+          startForm.addEventListener("submit", function(e) {
+            e.preventDefault();
+
+            fetch("{{ url_for('start_calibration') }}", { method: "POST" })
+              .then(response => response.json())
+              .then(data => {
+                placeholderEl.classList.add("hidden");
+                
+                if (prestartHintEl) prestartHintEl.classList.add("hidden");
+                if (homeHintEl) homeHintEl.classList.add("hidden");
+                if (eyeHintEl) eyeHintEl.classList.add("hidden");
+                if (postCompleteHintsEl) postCompleteHintsEl.classList.add("hidden");
+                if (containerEl) containerEl.classList.remove("completed");
+
+                homeBtn.style.display = "none";
+                eyeBtn.style.display = "none";
+
+                initWebcamAndSend();
+              })
+              .catch(err => console.error("Failed to restart calibration:", err));
+          });
+      }
+      // Initial webcam start
+      initWebcamAndSend();
+
+      if (prestartHintEl) prestartHintEl.classList.add("hidden");
+      if (homeHintEl) homeHintEl.classList.add("hidden");
+      if (eyeHintEl) eyeHintEl.classList.add("hidden");
+      if (postCompleteHintsEl) postCompleteHintsEl.classList.add("hidden");
+      if (containerEl) containerEl.classList.remove("completed");
     </script>
   </div>
 </body>

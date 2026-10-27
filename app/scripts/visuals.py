@@ -1,51 +1,16 @@
 from PIL import Image
 import numpy as np
-import cv2
 import io
 
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-def draw_target(frame, target_position="center"):
-    h, w, _ = frame.shape
-    x_center = w // 2
-    y_center = h // 2
-
-    # Margin targets from the frame edge (1% in)
-    margin_x = int(w * 0.01)
-    margin_y = int(h * 0.01)
-
-    positions = {
-        "top_left":      (margin_x, margin_y),
-        "top_center":    (x_center, margin_y),
-        "top_right":     (w - margin_x, margin_y),
-        "center_left":   (margin_x, y_center),
-        "center":        (x_center, y_center),
-        "center_right":  (w - margin_x, y_center),
-        "bottom_left":   (margin_x, h - margin_y),
-        "bottom_center": (x_center, h - margin_y),
-        "bottom_right":  (w - margin_x, h - margin_y),
-    }
-
-    if target_position not in positions:
-        raise ValueError(
-            "'target_position' must be one of: " + ", ".join(positions.keys())
-        )
-
-    x_target, y_target = positions[target_position]
-
-    # Draw visual target circles
-    cv2.circle(frame, (x_target, y_target), radius=22, color=(255,255,255), thickness=5)
-    cv2.circle(frame, (x_target, y_target), radius=15, color=(0, 255, 0), thickness=-1)
-
-    return frame
-
-def generate_heatmap(gaze_data, bg_image_file, bins=100, alpha=0.5):
+def generate_heatmap(gaze_data, image_file, bins=100, alpha=0.5):
     x = np.array([row['norm_x'] for row in gaze_data])
     y = np.array([row['norm_y'] for row in gaze_data])
 
-    bg_image = Image.open(bg_image_file).convert('RGB')
+    bg_image = Image.open(image_file).convert('RGB')
     width, height = bg_image.size
 
     if np.min(x) < 0 or np.max(x) > width:

@@ -1,6 +1,5 @@
 from app.scripts.settings import LEFT_IRIS, RIGHT_IRIS, TARGET_POSITIONS, CALIB_FRAMES
 from app.scripts.calculations import get_iris_center, normalize_iris
-from app.scripts.visuals import draw_target
 import numpy as np
 import cv2
 
@@ -14,24 +13,20 @@ def calibrate_frame(frame, face_mesh, calib_started, target_index, current_targe
             gaze_store[session_id] = {}
         gaze_store[session_id]['gaze_values'] = gaze_values
 
-    frame_disp = frame.copy()
     current_frame = current_target_frame
 
+    status = {"calib_started": calib_started, "calib_completed": False, "target_index": target_index}
+
     if not calib_started:
-        cv2.putText(
-            frame_disp, "Press 'Start' to begin",
-            (60, 120), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 3, cv2.LINE_AA
-        )
+        # Message flag for frontend display
+        status["message"] = "Press 'Start' to begin calibration"
     else:
         idx = target_index
-
         if idx < len(TARGET_POSITIONS):
             pos = TARGET_POSITIONS[idx]
-            frame_disp = draw_target(frame_disp, target_position=pos.lower())
-            cv2.putText(
-                frame_disp, f"{pos.replace('_', ' ').title()} ({current_frame + 1}/{CALIB_FRAMES})",
-                (60, 120), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 3, cv2.LINE_AA
-            )
+
+            # Target info and progress count for frontend
+            status["message"] = f"Target {idx + 1} Frames Captured: {current_frame + 1}/{CALIB_FRAMES}"
 
             # Run landmark detection and collect gaze point
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -62,10 +57,9 @@ def calibrate_frame(frame, face_mesh, calib_started, target_index, current_targe
                     gaze_store[session_id]['gaze_values'] = gaze_values
                     current_frame += 1
         else:
-            cv2.putText(
-                frame_disp, "Calibration complete!", (80, 200),
-                cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 4, cv2.LINE_AA
-            )
+            # Mark calibration as completed for frontend
+            status["calib_completed"] = True
+            status["message"] = "Calibration complete!"
 
             calibration_results = {}
             for pos in TARGET_POSITIONS:
@@ -85,15 +79,11 @@ def calibrate_frame(frame, face_mesh, calib_started, target_index, current_targe
                 x, y = calibration_results[key]
                 calibration_results[key] = (x - mean_x, y - mean_y)
 
-            # Save all results into the gaze_store for this session
             gaze_store[session_id].update({
                 'calib_results': calibration_results,
                 'mean_center': (mean_x, mean_y),
                 'raw_values': gaze_values
             })
 
-    # Encode processed frame as JPEG
-    ret, buffer = cv2.imencode('.jpg', frame_disp)
-    frame_bytes = buffer.tobytes()
-
-    return frame_bytes, current_frame
+    # Status: {message, current_target, calib_completed}
+    return status, current_frame

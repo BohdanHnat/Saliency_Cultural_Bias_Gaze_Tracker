@@ -17,8 +17,8 @@
 
             <ul class="et-image-list">
                 {% for img in image_files %}
-                <li>
-                    <form method="get" action="{{ url_for('eye_tracking') }}">
+                <li class="{% if img == selected_image %}selected{% endif %}">
+                    <form method="get" action="{{ url_for('eye_tracking_page') }}">
                         <input type="hidden" name="image" value="{{ img }}">
                         <button type="submit" class="et-image-btn" {% if img == selected_image %} disabled {% endif %}>
                             ▶
@@ -39,18 +39,15 @@
             {% endif %}
 
             <div class="et-sidebar-footer">
-                <a href="{{ url_for('calibration') }}" class="et-nav-button">Restart Calibration</a>
+                <a href="{{ url_for('calibration_page') }}" class="et-nav-button">Calibration Page</a>
                 <a id="start-tracking-btn" href="{{ url_for('start_eye_tracking', image=selected_image) }}" class="et-nav-button">Start Eye Tracking</a>
             </div>
         </aside>
 
-        <div class="et-content">
-            <div class="et-image-true-bg">
-                <img src="{{ url_for('static', filename=selected_image) }}"
-                     alt="Experiment Visual"
-                     class="et-main-image-true">
-            </div>
-        </div>
+        <div class="et-content-frame">
+          <img src="{{ url_for('static', filename='images/' ~ selected_image ~ '.jpg') }}"
+               alt="Experiment Visual" class="et-content-image">
+        </div>    
     </div>
 
     {% if tracking_in_progress %}
@@ -115,8 +112,8 @@
             cameraStream = stream;
             captureActive = true;
             elapsedSeconds = 0;
-            // Start sending frames every 120ms
-            eyeTrackingInterval = setInterval(sendFrame, 120);
+            // Start sending frames every 500ms
+            eyeTrackingInterval = setInterval(sendFrame, 500);
             console.log('Eye tracking started');
           })
           .catch((err) => {

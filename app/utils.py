@@ -16,12 +16,12 @@ def get_session_id():
     return session['sid']
 
 def get_image_files():
-    images_folder = current_app.static_folder
+    images_folder = os.path.join(current_app.static_folder, 'images')
 
     try:
         files = [
-            f for f in os.listdir(images_folder)
-            if f.startswith('img_') and f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'))
+            os.path.splitext(f)[0] for f in os.listdir(images_folder)
+            if f.startswith('Image_') and f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'))
         ]
         return sorted(files)
 
