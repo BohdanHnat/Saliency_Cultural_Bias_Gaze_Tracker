@@ -1,0 +1,209 @@
+from flask import render_template, redirect, url_for, session, send_file, current_app, request, jsonify
+
+from app.utils import get_session_id, get_image_files, gaze_store, frame_counters, frame_data_lock
+from app.scripts.settings import face_mesh, CALIB_FRAMES, ET_RECORD_SECONDS
+from app.scripts.eye_tracker import run_eye_tracking
+from app.scripts.calibration import calibrate_frame
+from app.scripts.visuals import generate_heatmap
+from app import app
+
+import numpy as np
+import threading
+import cv2
+import io
+import os
+
+@app.route('/')
+def homepage():
+    return render_template('homepage.html')
+
+@app.before_request
+def force_fresh_session():
+    session.permanent = False
+
+@app.route('/reset_session', methods=['POST'])
+def reset_session():
+    session.clear()
+
+    # Clear gaze_store for this session
+    sid = get_session_id()
+    if sid in gaze_store:
+        del gaze_store[sid]
+
+    if request.is_json:
+        return jsonify({"status": "reset"})
+    else:
+        # Redirect (manual button press)
+        return redirect(url_for('homepage'))
+
+@app.route('/calibration', methods=['GET', 'POST'])
+def calibration_page():
+    if 'calib_started' not in session:
+        session['calib_started'] = False
+
+    return render_template('calibration.html')
+
+@app.route('/calibration_frame', methods=['POST'])
+def calibration_frame():  # Receives a webcam frame
+    file = request.files['frame']
+    file_bytes = np.frombuffer(file.read(), np.uint8)
+    frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+
+    # Fetch session and calibration state
+    session_id = get_session_id()
+    calib_started = session.get('calib_started', False)
+    target_index = session.get('target_index', 0)
+    current_target_frame = session.get('current_target_frame', 0)
+
+    status, current_target_frame = calibrate_frame(
+        frame, face_mesh, calib_started, target_index, current_target_frame, session_id, gaze_store
+    )
+
+    session['current_target_frame'] = current_target_frame
+
+    if not status.get("calib_completed", False) and current_target_frame >= CALIB_FRAMES: next_target()
+
+    return jsonify(status)
+
+@app.route('/start_calibration', methods=['POST'])
+def start_calibration():
+    # Clear all previous session data upon (re)starting calibration
+    session.clear()
+    session['calib_started'] = True
+    session['target_index'] = 0
+    session['current_target_frame'] = 0
+
+    # Clear gaze_store as well for this session
+    sid = get_session_id()
+    if sid in gaze_store:
+        del gaze_store[sid]
+
+    # Return status dict
+    status = {
+        "calib_started": True,
+        "calib_completed": False,
+        "target_index": 0,
+    }
+    return jsonify(status)
+
+@app.route('/next_target', methods=['GET', 'POST'])
+def next_target():
+    idx = session.get('target_index', 0)
+    session['target_index'] = idx + 1
+    session['current_target_frame'] = 0
+
+    # Internal auto-advance (from calibration_frame), no return content
+    return ("", 204)
+
+@app.route('/eye_tracking', methods=['GET'])
+def eye_tracking_page():
+    sid = get_session_id()
+    image_files = get_image_files()
+
+    selected_image = request.args.get('image', image_files[0] if image_files else 'Image_1')
+
+    tracking_in_progress = gaze_store.get(sid, {}).get('tracking_in_progress', False)
+    tracking_seconds = ET_RECORD_SECONDS
+
+    return render_template(
+        'eye_tracking.html',
+        image_files=image_files,
+        selected_image=selected_image,
+        tracking_in_progress=tracking_in_progress,
+        tracking_seconds=tracking_seconds
+    )
+
+@app.route('/eye_tracking_frame', methods=['POST'])
+def eye_tracking_frame(): # Receives a webcam frame and starts a background thread to process it
+    sid = get_session_id()
+    image_name = request.args.get('image')
+    frame_file = request.files.get('frame')
+
+    if not image_name or not frame_file:
+        return jsonify({'error': 'Missing image name or frame file'}), 400
+
+    # Read and decode the frame data immediately
+    frame_bytes = frame_file.read()
+    np_arr = np.frombuffer(frame_bytes, np.uint8)
+    frame_for_tracking = cv2.imdecode(np_arr, cv2.IMREAD_COLOR) # Read the data into a NumPy array
+
+    with frame_data_lock:
+        current_et_frame = frame_counters.get(sid, 0)
+        frame_counters[sid] = current_et_frame + 1
+
+    def run_tracking_in_thread():
+        mean_center = gaze_store.get(sid, {}).get('mean_center', (0.0, 0.0))
+
+        run_eye_tracking(frame_for_tracking, current_et_frame, face_mesh, mean_center, sid, gaze_store, image_name)
+
+    threading.Thread(target=run_tracking_in_thread).start()
+
+    return jsonify({'status': 'Frame accepted for processing'}), 202
+
+@app.route('/start_eye_tracking')
+def start_eye_tracking():
+    sid = get_session_id()
+    image = request.args.get('image')
+
+    gaze_store.setdefault(sid, {})['tracking_in_progress'] = True
+
+    return redirect(url_for('eye_tracking_page', image=image))
+
+@app.route('/eye_tracking_status')
+def eye_tracking_status():
+    sid = get_session_id()
+
+    status = gaze_store.get(sid, {}).get('tracking_in_progress', False)
+
+    return {'in_progress': status}
+
+@app.route('/eye_tracking_results')
+def eye_tracking_results():
+    sid = get_session_id()
+
+    gaze_store.setdefault(sid, {})['tracking_in_progress'] = False
+
+    # Get all image gaze results for this session
+    session_store = gaze_store.setdefault(sid, {})
+    gaze_results_dict = session_store.get('gaze_results', {})  # {image_filename: gaze_data, ...}
+
+    processed_images = list(gaze_results_dict.keys())
+
+    selected_image = request.args.get('image')
+
+    if not selected_image and processed_images:
+        selected_image = processed_images[-1]
+    elif not processed_images:
+        selected_image = None
+
+    # Generate and cache the heatmap only once per image
+    heatmap_cache = session_store.setdefault('heatmap_cache', {})
+    if selected_image not in heatmap_cache:
+        gaze_data = gaze_results_dict.get(selected_image, [])
+
+        image_file = os.path.join(current_app.static_folder, "images", f"{selected_image}.jpg")
+
+        img = generate_heatmap(gaze_data, image_file)
+
+        img_io = io.BytesIO()
+        img.save(img_io, 'PNG')
+
+        heatmap_cache[selected_image] = img_io.getvalue()
+
+    return render_template(
+        'eye_tracking_results.html',
+        processed_images=processed_images,
+        selected_image=selected_image,
+    )
+
+@app.route('/gaze_heatmap_cached')
+def gaze_heatmap_cached():
+    sid = get_session_id()
+    image = request.args.get('image')
+
+    # Serve the already-generated heatmap PNG from cache
+    cached = gaze_store.get(sid, {}).get('heatmap_cache', {}).get(image)
+    if not cached:
+        return ('Heatmap not generated', 404)
+
+    return send_file(io.BytesIO(cached), mimetype='image/png')

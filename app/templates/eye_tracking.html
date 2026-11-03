@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Eye Tracking Page</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css_files/eye_tracking.css') }}">
+</head>
+<body>
+    <video id="webcam" width="1280" height="720" autoplay style="display: none;"></video>
+    <canvas id="frame-canvas" width="1280" height="720" style="display: none;"></canvas>
+
+    <div class="et-main-layout">
+        <aside class="et-sidebar">
+            <div class="et-sidebar-header">
+                Eye Tracking Image Samples – Select an image below
+            </div>
+
+            <ul class="et-image-list">
+                {% for img in image_files %}
+                <li class="{% if img == selected_image %}selected{% endif %}">
+                    <form method="get" action="{{ url_for('eye_tracking_page') }}">
+                        <input type="hidden" name="image" value="{{ img }}">
+                        <button type="submit" class="et-image-btn" {% if img == selected_image %} disabled {% endif %}>
+                            ▶
+                        </button>
+                        <span class="et-image-label">{{ img }}</span>
+                    </form>
+                </li>
+                {% endfor %}
+            </ul>
+
+            {% if tracking_in_progress %}
+            <div class="et-sidebar-notification">
+                <span>🟡 Eye Tracking In Progress…</span>
+                <div id="et-timer" style="margin-top: 8px;">
+                    <span id="et-timer-elapsed">0</span> / {{ tracking_seconds }} seconds
+                </div>
+            </div>
+            {% endif %}
+
+            <div class="et-sidebar-footer">
+                <a href="{{ url_for('calibration_page') }}" class="et-nav-button">Calibration Page</a>
+                <a id="start-tracking-btn" href="{{ url_for('start_eye_tracking', image=selected_image) }}" class="et-nav-button">Start Eye Tracking</a>
+            </div>
+        </aside>
+
+        <div class="et-content-frame">
+          <img src="{{ url_for('static', filename='images/' ~ selected_image ~ '.jpg') }}"
+               alt="Experiment Visual" class="et-content-image">
+        </div>    
+    </div>
+
+    {% if tracking_in_progress %}
+    <script src="{{ url_for('static', filename='js_scripts/eye_tracking_poll.js') }}"></script>
+    <script>
+        startEyeTrackingPolling(
+            "{{ url_for('eye_tracking_results', image=selected_image) }}",
+            "{{ url_for('eye_tracking_status') }}",
+            {{ tracking_seconds|int }}
+        );
+    </script>
+    {% endif %}
+
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+      const video = document.getElementById('webcam');
+      const canvas = document.getElementById('frame-canvas');
+      const context = canvas.getContext('2d');
+      const startButton = document.getElementById('start-tracking-btn');
+
+      let eyeTrackingInterval = null;
+      let cameraStream = null;
+      let elapsedSeconds = 0;
+      let captureActive = false;
+
+      const trackingDurationSeconds = {{ tracking_seconds|int }};
+      const shouldAutoStart = {{ tracking_in_progress|tojson|default(false) }};
+
+      // Send frames to backend at regular intervals
+      function sendFrame() {
+        if (!captureActive || !video.srcObject) return;
+
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(function (blob) {
+          if (!blob) return;
+          const formData = new FormData();
+          formData.append('frame', blob, 'frame.jpg');
+          fetch('{{ url_for("eye_tracking_frame", image=selected_image) }}', {
+            method: 'POST',
+            body: formData
+          }).catch(console.error);
+        }, 'image/jpeg');
+
+        // Duration-based stop
+        elapsedSeconds += 0.12;
+        if (trackingDurationSeconds > 0 && elapsedSeconds >= trackingDurationSeconds) {
+          stopEyeTracking();
+          console.log('Tracking duration reached. Stopping');
+        }
+      }
+
+      function startEyeTracking() {
+        // Prevent starting multiple tracking intervals
+        if (eyeTrackingInterval !== null) {
+          return;
+        }
+
+        // Request webcam access
+        navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } })
+          .then((stream) => {
+            video.srcObject = stream;
+            cameraStream = stream;
+            captureActive = true;
+            elapsedSeconds = 0;
+            // Start sending frames every 500ms
+            eyeTrackingInterval = setInterval(sendFrame, 500);
+            console.log('Eye tracking started');
+          })
+          .catch((err) => {
+            console.error("Camera access error:", err);
+            alert('Camera access was denied or is unavailable');
+          });
+      }
+
+      function stopEyeTracking() {
+        captureActive = false;
+        if (eyeTrackingInterval) {
+          clearInterval(eyeTrackingInterval);
+          eyeTrackingInterval = null;
+        }
+        // Stop all tracks on the camera stream to turn off the webcam
+        if (cameraStream) {
+          cameraStream.getTracks().forEach(track => track.stop());
+          cameraStream = null;
+        }
+        console.log('Eye tracking stopped');
+      }
+
+      // If the page loads with tracking already in progress (after a redirect)
+      if (shouldAutoStart) {
+        startEyeTracking();
+      }
+
+      // Ensure webcam is turned off if the user navigates away or closes the tab
+      window.addEventListener('beforeunload', stopEyeTracking);
+    });
+</script>
+</body>
+</html>
